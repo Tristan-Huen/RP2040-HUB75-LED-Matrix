@@ -1,0 +1,86 @@
+; PIO Program for HUB75 LED matrix
+;
+; Data on the TX FIFO is of format R1 G1 B1 R2 G2 B2 E D C B A
+; This gets shifted out such that A will end up at the base pin.
+;
+; NOTE: There is one instruction that gets modified during runtime. 
+;       The instruction values can viewed either from the generated 
+;       header file or at https://wokwi.com/tools/pioasm
+
+.define BITS 6  ;Take log2(COLS)
+.define SHIFT_VAL 32 - BITS
+
+.program led_matrix
+
+.side_set 3 ; MSB: LATCH
+            ;      OE  
+            ; LSB: CLK
+
+; Load the ISR with maximum possible value.   
+mov ISR ~NULL side 0b010
+
+; Create value for amount of shifts needed on matrix.
+; Works by right-shifting a specific amount to create the needed value.
+; Equivalent to (1 << 32) - 1 >> N where N is the shift value.
+in NULL SHIFT_VAL side 0b010
+
+.wrap_target
+
+    mov x ISR side 0b010
+
+shift_in:
+
+    ; Load ISR with max value.
+    mov ISR ~NULL side 0b010
+
+    ; Shift all the other data to PINS and pulse the clock.
+    out PINS 11 side 0b011 [1]
+
+    ; Keep pulling data for all 64 values in the row.
+    jmp x-- shift_in side 0b010
+
+    ; Creates value for BCM delay. This shift is changed during runtime.
+    ; The 32 is a placeholder value.
+    in NULL 32 side 0b010
+
+    ; Move delay value to y and assert the latch
+    mov y ISR side 0b110
+
+    ; Reset ISR to max
+    mov ISR ~NULL side 0b110
+
+    ; Shift ISR back to needed value for next row and deassert the latch
+    in NULL SHIFT_VAL side 0b010
+
+delay:
+    ; Deassert OE and delay for specified number of cycles.
+    jmp y-- delay side 0b000
+.wrap
+
+
+% c-sdk {
+static inline void led_matrix_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    pio_sm_config c = led_matrix_program_get_default_config(offset);
+
+    // Set the pin direction to output at the PIO
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 14, true);
+
+    sm_config_set_out_pins(&c, pin, 11);
+
+    for (int i = pin; i < 14; i++) {
+        pio_gpio_init(pio, i);
+    }
+
+    sm_config_set_sideset_pins(&c, pin+11);
+
+    //Configure ISR for right-shifting.
+    sm_config_set_in_shift(&c, true, false, 0);
+
+    sm_config_set_out_shift(&c, true, true, 11);
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+    // Set the state machine running
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
